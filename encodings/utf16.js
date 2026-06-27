@@ -1,64 +1,252 @@
 "use strict"
-var Buffer = require("safer-buffer").Buffer
 
-// Note: UTF16-LE (or UCS2) codec is Node.js native. See encodings/internal.js
+// == UTF16-LE codec. ==========================================================
+// Note: We're not using Node.js native codec because StringDecoder implementation is buggy
+// (adds \0 in some chunks; doesn't flag non-even number of bytes). We do use raw encoding/decoding
+// routines for performance where possible, though.
+
+exports.utf16le = class Utf16LECodec {
+  createEncoder (options, iconv) {
+    return new Utf16LEEncoder(iconv.backend)
+  }
+
+  createDecoder (options, iconv) {
+    return new Utf16LEDecoder(iconv.backend, iconv.defaultCharUnicode)
+  }
+
+  get bomAware () { return true }
+}
+
+class Utf16LEEncoder {
+  constructor (backend) {
+    this.backend = backend
+  }
+
+  write (str) {
+    const bytes = this.backend.allocBytes(str.length * 2)
+    const chars = new Uint16Array(bytes.buffer, bytes.byteOffset, str.length)
+    for (let i = 0; i < str.length; i++) {
+      chars[i] = str.charCodeAt(i)
+    }
+    return this.backend.bytesToResult(bytes, bytes.length)
+  }
+
+  end () {}
+}
+
+class Utf16LEDecoder {
+  constructor (backend, defaultChar) {
+    this.backend = backend
+    this.defaultChar = defaultChar
+    this.leadByte = -1
+    this.leadSurrogate = undefined
+  }
+
+  write (buf) {
+    // NOTE: This function is mostly the same as Utf16BEDecoder.write() with bytes swapped.
+    //   Please keep them in sync.
+    // NOTE: The logic here is more complicated than barely necessary due to several limitations:
+    //  1. Input data chunks can split 2-byte code units, making 'leadByte' necessary.
+    //  2. Input data chunks can split valid surrogate pairs, making 'leadSurrogate' necessary.
+    //  3. rawCharsToResult() of Web backend converts all lone surrogates to '�', so we need to make
+    //     sure we don't feed it parts of valid surrogate pairs.
+    //  4. For performance reasons we want to use initial buffer as much as we can. This is not
+    //     possible if after our calculations the 2-byte memory alignment of a Uint16Array is lost,
+    //     in which case we have to do a copy.
+
+    if (buf.length == 0) {
+      return ""
+    }
+    let offset = 0
+    let byteLen = buf.length
+
+    // Process previous leadByte
+    let prefix = ""
+    if (this.leadByte !== -1) {
+      offset++; byteLen--
+      prefix = String.fromCharCode(this.leadByte | (buf[0] << 8))
+    }
+
+    // Set new leadByte if needed
+    if (byteLen & 1) {
+      this.leadByte = buf[buf.length - 1]
+      byteLen--
+    } else {
+      this.leadByte = -1
+    }
+
+    // Process leadSurrogate
+    if (prefix.length || byteLen) {
+      // Add high surrogate from previous chunk.
+      if (this.leadSurrogate) {
+        if (prefix.length) {
+          prefix = this.leadSurrogate + prefix
+        } else {
+          // Make sure 'chars' don't start with a lone low surrogate; it will mess with rawCharsToResult.
+          prefix = this.leadSurrogate + String.fromCharCode(buf[offset] | (buf[offset + 1] << 8))
+          offset += 2; byteLen -= 2
+        }
+        this.leadSurrogate = undefined
+      }
+
+      // Slice off a new high surrogate at the end of the current chunk.
+      if (byteLen) {
+        const lastIdx = offset + byteLen - 2
+        const lastChar = buf[lastIdx] | (buf[lastIdx + 1] << 8)
+        if (lastChar >= 0xD800 && lastChar < 0xDC00) {
+          this.leadSurrogate = String.fromCharCode(lastChar)
+          byteLen -= 2
+        }
+      } else { // slice from prefix
+        const lastChar = prefix.charCodeAt(prefix.length - 1)
+        if (lastChar >= 0xD800 && lastChar < 0xDC00) {
+          this.leadSurrogate = prefix[prefix.length - 1]
+          prefix = prefix.slice(0, -1)
+        }
+      }
+    }
+
+    let chars
+    if ((buf.byteOffset + offset) & 1 === 0) {
+      // If byteOffset is aligned, just use the ArrayBuffer from input buf.
+      chars = new Uint16Array(buf.buffer, buf.byteOffset + offset, byteLen >> 1)
+    } else {
+      // If byteOffset is NOT aligned, create a new aligned buffer and copy the data.
+      chars = this.backend.allocRawChars(byteLen >> 1)
+      const srcByteView = new Uint8Array(buf.buffer, buf.byteOffset + offset, byteLen)
+      const destByteView = new Uint8Array(chars.buffer, chars.byteOffset, byteLen)
+      destByteView.set(srcByteView)
+    }
+
+    return prefix + this.backend.rawCharsToResult(chars, chars.length)
+  }
+
+  end () {
+    if (this.leadSurrogate || this.leadByte !== -1) {
+      const res = (this.leadSurrogate ? this.leadSurrogate : "") + (this.leadByte !== -1 ? this.defaultChar : "")
+      this.leadSurrogate = undefined
+      this.leadByte = -1
+      return res
+    }
+  }
+}
+exports.ucs2 = "utf16le"  // Alias
 
 // == UTF16-BE codec. ==========================================================
 
-exports.utf16be = Utf16BECodec
-function Utf16BECodec () {
-}
-
-Utf16BECodec.prototype.encoder = Utf16BEEncoder
-Utf16BECodec.prototype.decoder = Utf16BEDecoder
-Utf16BECodec.prototype.bomAware = true
-
-// -- Encoding
-
-function Utf16BEEncoder () {
-}
-
-Utf16BEEncoder.prototype.write = function (str) {
-  var buf = Buffer.from(str, "ucs2")
-  for (var i = 0; i < buf.length; i += 2) {
-    var tmp = buf[i]; buf[i] = buf[i + 1]; buf[i + 1] = tmp
-  }
-  return buf
-}
-
-Utf16BEEncoder.prototype.end = function () {
-}
-
-// -- Decoding
-
-function Utf16BEDecoder () {
-  this.overflowByte = -1
-}
-
-Utf16BEDecoder.prototype.write = function (buf) {
-  if (buf.length == 0) { return "" }
-
-  var buf2 = Buffer.alloc(buf.length + 1)
-  var i = 0; var j = 0
-
-  if (this.overflowByte !== -1) {
-    buf2[0] = buf[0]
-    buf2[1] = this.overflowByte
-    i = 1; j = 2
+exports.utf16be = class Utf16BECodec {
+  createEncoder (options, iconv) {
+    return new Utf16BEEncoder(iconv.backend)
   }
 
-  for (; i < buf.length - 1; i += 2, j += 2) {
-    buf2[j] = buf[i + 1]
-    buf2[j + 1] = buf[i]
+  createDecoder (options, iconv) {
+    return new Utf16BEDecoder(iconv.backend, iconv.defaultCharUnicode)
   }
 
-  this.overflowByte = (i == buf.length - 1) ? buf[buf.length - 1] : -1
-
-  return buf2.slice(0, j).toString("ucs2")
+  get bomAware () { return true }
 }
 
-Utf16BEDecoder.prototype.end = function () {
-  this.overflowByte = -1
+class Utf16BEEncoder {
+  constructor (backend) {
+    this.backend = backend
+  }
+
+  write (str) {
+    const bytes = this.backend.allocBytes(str.length * 2)
+    let bytesPos = 0
+    for (let i = 0; i < str.length; i++) {
+      const char = str.charCodeAt(i)
+      bytes[bytesPos++] = char >> 8
+      bytes[bytesPos++] = char & 0xff
+    }
+    return this.backend.bytesToResult(bytes, bytesPos)
+  }
+
+  end () {}
+}
+
+class Utf16BEDecoder {
+  constructor (backend, defaultChar) {
+    this.backend = backend
+    this.defaultChar = defaultChar
+    this.leadByte = -1
+    this.leadSurrogate = undefined
+  }
+
+  write (buf) {
+    // NOTE: This function is mostly copy/paste from Utf16LEDecoder.write() with bytes swapped.
+    // Please keep them in sync. Comments in that function apply here too.
+    if (buf.length === 0) {
+      return ""
+    }
+
+    let offset = 0
+    let byteLen = buf.length
+
+    // Process previous leadByte
+    let prefix = ""
+    if (this.leadByte !== -1) {
+      offset++; byteLen--
+      prefix = String.fromCharCode((this.leadByte << 8) | buf[0])
+    }
+
+    // Set new leadByte
+    if (byteLen & 1) {
+      this.leadByte = buf[buf.length - 1]
+      byteLen--
+    } else {
+      this.leadByte = -1
+    }
+
+    // Process leadSurrogate
+    if (prefix.length || byteLen) {
+      // Add high surrogate from previous chunk.
+      if (this.leadSurrogate) {
+        if (prefix.length) {
+          prefix = this.leadSurrogate + prefix
+        } else {
+          // Make sure 'chars' don't start with a lone low surrogate; it will mess with rawCharsToResult.
+          prefix = this.leadSurrogate + String.fromCharCode((buf[offset] << 8) | buf[offset + 1])
+          offset += 2; byteLen -= 2
+        }
+        this.leadSurrogate = undefined
+      }
+
+      // Slice off a new high surrogate at the end of the current chunk.
+      if (byteLen) {
+        const lastIdx = offset + byteLen - 2
+        const lastChar = (buf[lastIdx] << 8) | buf[lastIdx + 1]
+        if (lastChar >= 0xD800 && lastChar < 0xDC00) {
+          this.leadSurrogate = String.fromCharCode(lastChar)
+          byteLen -= 2
+        }
+      } else { // slice from prefix
+        const lastChar = prefix.charCodeAt(prefix.length - 1)
+        if (lastChar >= 0xD800 && lastChar < 0xDC00) {
+          this.leadSurrogate = prefix[prefix.length - 1]
+          prefix = prefix.slice(0, -1)
+        }
+      }
+    }
+
+    // Convert the main chunk of bytes
+    const chars = this.backend.allocRawChars(byteLen >> 1)
+    const srcBytes = new DataView(buf.buffer, buf.byteOffset + offset, byteLen)
+    for (let i = 0; i < chars.length; i++) {
+      chars[i] = srcBytes.getUint16(i * 2)
+    }
+
+    return prefix + this.backend.rawCharsToResult(chars, chars.length)
+  }
+
+  end () {
+    if (this.leadSurrogate || this.leadByte !== -1) {
+      const res = (this.leadSurrogate ? this.leadSurrogate : "") + (this.leadByte !== -1 ? this.defaultChar : "")
+      this.leadSurrogate = undefined
+      this.leadByte = -1
+      return res
+    }
+  }
 }
 
 // == UTF-16 codec =============================================================
@@ -69,92 +257,73 @@ Utf16BEDecoder.prototype.end = function () {
 
 // Encoder uses UTF-16LE and prepends BOM (which can be overridden with addBOM: false).
 
-exports.utf16 = Utf16Codec
-function Utf16Codec (codecOptions, iconv) {
-  this.iconv = iconv
+exports.utf16 = class Utf16Codec {
+  createEncoder (options, iconv) {
+    options = options || {}
+    if (options.addBOM === undefined)
+    { options.addBOM = true }
+    return iconv.getEncoder("utf-16le", options)
+  }
+
+  createDecoder (options, iconv) {
+    return new Utf16Decoder(options, iconv)
+  }
 }
 
-Utf16Codec.prototype.encoder = Utf16Encoder
-Utf16Codec.prototype.decoder = Utf16Decoder
+class Utf16Decoder {
+  constructor (options, iconv) {
+    this.decoder = null
+    this.initialBufs = []
+    this.initialBufsLen = 0
 
-// -- Encoding (pass-through)
+    this.options = options || {}
+    this.iconv = iconv
+  }
 
-function Utf16Encoder (options, codec) {
-  options = options || {}
-  if (options.addBOM === undefined) { options.addBOM = true }
-  this.encoder = codec.iconv.getEncoder("utf-16le", options)
-}
+  write (buf) {
+    if (!this.decoder) {
+      // Codec is not chosen yet. Accumulate initial bytes.
+      this.initialBufs.push(buf)
+      this.initialBufsLen += buf.length
 
-Utf16Encoder.prototype.write = function (str) {
-  return this.encoder.write(str)
-}
+      // We need more bytes to use space heuristic (see below)
+      if (this.initialBufsLen < 16) {
+        return ""
+      }
 
-Utf16Encoder.prototype.end = function () {
-  return this.encoder.end()
-}
+      // We have enough bytes -> detect endianness.
+      return this._detectEndiannessAndSetDecoder()
+    }
 
-// -- Decoding
+    return this.decoder.write(buf)
+  }
 
-function Utf16Decoder (options, codec) {
-  this.decoder = null
-  this.initialBufs = []
-  this.initialBufsLen = 0
+  end () {
+    if (!this.decoder) {
+      return this._detectEndiannessAndSetDecoder() + (this.decoder.end() || "")
+    }
+    return this.decoder.end()
+  }
 
-  this.options = options || {}
-  this.iconv = codec.iconv
-}
-
-Utf16Decoder.prototype.write = function (buf) {
-  if (!this.decoder) {
-    // Codec is not chosen yet. Accumulate initial bytes.
-    this.initialBufs.push(buf)
-    this.initialBufsLen += buf.length
-
-    if (this.initialBufsLen < 16) // We need more bytes to use space heuristic (see below)
-    { return "" }
-
-    // We have enough bytes -> detect endianness.
-    var encoding = detectEncoding(this.initialBufs, this.options.defaultEncoding)
+  _detectEndiannessAndSetDecoder () {
+    const encoding = detectEncoding(this.initialBufs, this.options.defaultEncoding)
     this.decoder = this.iconv.getDecoder(encoding, this.options)
 
-    var resStr = ""
-    for (var i = 0; i < this.initialBufs.length; i++) { resStr += this.decoder.write(this.initialBufs[i]) }
-
+    const resStr = this.initialBufs.reduce((a, b) => a + this.decoder.write(b), "")
     this.initialBufs.length = this.initialBufsLen = 0
     return resStr
   }
-
-  return this.decoder.write(buf)
-}
-
-Utf16Decoder.prototype.end = function () {
-  if (!this.decoder) {
-    var encoding = detectEncoding(this.initialBufs, this.options.defaultEncoding)
-    this.decoder = this.iconv.getDecoder(encoding, this.options)
-
-    var resStr = ""
-    for (var i = 0; i < this.initialBufs.length; i++) { resStr += this.decoder.write(this.initialBufs[i]) }
-
-    var trail = this.decoder.end()
-    if (trail) { resStr += trail }
-
-    this.initialBufs.length = this.initialBufsLen = 0
-    return resStr
-  }
-  return this.decoder.end()
 }
 
 function detectEncoding (bufs, defaultEncoding) {
-  var b = []
-  var charsProcessed = 0
-  // Number of ASCII chars when decoded as LE or BE.
-  var asciiCharsLE = 0
-  var asciiCharsBE = 0
+  const b = []
+  let charsProcessed = 0
+  let asciiCharsLE = 0; let asciiCharsBE = 0 // Number of ASCII chars when decoded as LE or BE.
 
   outerLoop:
-  for (var i = 0; i < bufs.length; i++) {
-    var buf = bufs[i]
-    for (var j = 0; j < buf.length; j++) {
+  for (let i = 0; i < bufs.length; i++) {
+    const buf = bufs[i]
+    for (let j = 0; j < buf.length; j++) {
       b.push(buf[j])
       if (b.length === 2) {
         if (charsProcessed === 0) {

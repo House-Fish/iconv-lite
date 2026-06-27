@@ -1,7 +1,8 @@
+"use strict"
+
 var assert = require("assert")
-var Buffer = require("safer-buffer").Buffer
-var join = require("path").join
-var iconv = require(join(__dirname, "/../"))
+var Buffer = require("buffer").Buffer
+var iconv = require("../")
 
 // These tests are mostly from https://github.com/kkaefer/utf7
 // In case of ambiguity, we do the same as iconv. For example, we encode "optional direct" characters, but leave spaces and \n\r\t as-is.

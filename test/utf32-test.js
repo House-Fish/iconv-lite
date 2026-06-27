@@ -1,7 +1,8 @@
+"use strict"
+
 var assert = require("assert")
-var Buffer = require("safer-buffer").Buffer
-var join = require("path").join
-var iconv = require(join(__dirname, "/../"))
+var Buffer = require("buffer").Buffer
+var iconv = require("../")
 
 var testStr = "1aя中文☃💩"
 var testStr2 = "❝Stray high \uD977😱 and low\uDDDD☔ surrogate values.❞"

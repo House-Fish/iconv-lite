@@ -1,30 +1,57 @@
+"use strict"
+
+const webpack = require("webpack")
+
 // Karma configuration
 // Generated on Sat May 23 2020 18:02:48 GMT-0400 (Eastern Daylight Time)
 process.env.CHROME_BIN = require("puppeteer").executablePath()
 
 module.exports = function (config) {
   config.set({
-
     // base path that will be used to resolve all patterns (eg. files, exclude)
     basePath: "",
 
     // frameworks to use
     // available frameworks: https://npmjs.org/browse/keyword/karma-adapter
-    frameworks: ["mocha"],
+    frameworks: ["mocha", "webpack"],
+
+    plugins: [
+      "karma-webpack",
+      "karma-mocha",
+      "karma-chrome-launcher",
+      "karma-mocha-reporter"
+    ],
 
     // list of files / patterns to load in the browser
     files: [
-      { pattern: "*test.js", watched: false }
+      { pattern: "*{test,tests}.js", watched: false }
     ],
 
     // preprocess matching files before serving them to the browser
     // available preprocessors: https://npmjs.org/browse/keyword/karma-preprocessor
     preprocessors: {
-      "*test.js": ["webpack"]
+      "*{test,tests}.js": ["webpack"]
     },
 
     webpack: {
-      mode: "development"
+      mode: "development",
+      target: ["web"],
+      resolve: {
+        fallback: {
+          stream: require.resolve("stream-browserify"),
+          assert: require.resolve("assert/"),
+          util: require.resolve("util/"),
+          buffer: require.resolve("buffer") // This should't be needed, need work in remove this.
+        }
+      },
+      node: {
+        global: true
+      },
+      plugins: [
+        new webpack.ProvidePlugin({
+          process: require.resolve("process/browser.js")
+        })
+      ]
       // karma watches the test entry points
       // (you don't need to specify the entry option)
       // webpack watches dependencies
@@ -41,7 +68,7 @@ module.exports = function (config) {
     // test results reporter to use
     // possible values: 'dots', 'progress'
     // available reporters: https://npmjs.org/browse/keyword/karma-reporter
-    reporters: ["progress"],
+    reporters: ["mocha"],
 
     // web server port
     port: 9876,

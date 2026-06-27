@@ -114,12 +114,6 @@ declare namespace iconv {
   /** The character used for untranslatable `single-byte` characters. @default "?" */
   export let defaultCharSingleByte: string
 
-  /**
-   * Skip deprecation warning when strings are used instead of Buffers during decoding.
-   * Note: {@link iconv.decode} converts the string to Buffer regardless.
-   */
-  export let skipDecodeWarning: boolean
-
   /** @readonly Whether or not, Streaming API is enabled. */
   export const supportsStreams: boolean
 

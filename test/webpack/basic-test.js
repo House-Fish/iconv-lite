@@ -1,3 +1,5 @@
+"use strict"
+
 var assert = require("assert").strict
 
 describe("iconv-lite", function () {
@@ -8,7 +10,7 @@ describe("iconv-lite", function () {
     // See https://github.com/ashtuchkin/iconv-lite/issues/204 for details.
     process.versions.node = "12.0.0"
 
-    iconv = require(".").iconv
+    iconv = require("iconv-lite")
   })
 
   it("does not support streams by default", function () {
@@ -52,7 +54,6 @@ describe("iconv-lite", function () {
 
         var encoded = iconv.encode(expected, encoding)
         var uint8Array = Uint8Array.from(encoded)
-
         var actual = iconv.decode(uint8Array, encoding)
         assert.equal(actual, expected, encoding)
       })
