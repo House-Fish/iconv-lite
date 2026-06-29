@@ -20,7 +20,15 @@
 
     When decoding, ill-formed input — an incomplete code unit, non-zero Base64 padding bits, a shift-in ("+"/"&") not followed by Base64 or "-", or a non-ASCII byte outside a shifted run — is now replaced with U+FFFD instead of being passed through (lone surrogates still pass through as raw 16-bit code units). When encoding UTF-7, the optional "Set O" punctuation is now left as direct ASCII, so the output differs byte-for-byte for those characters, though it still decodes to the same text.
 
+- Make the UTF-32 codecs strict and browser-native - by [@bjohansebas](https://github.com/bjohansebas) in [#407](https://github.com/pillarjs/iconv-lite/pull/407)
+
+    UTF-32LE/BE and the auto-detecting `utf-32` codec now decode strictly per the Unicode Standard: a code unit that is a surrogate code point (U+D800–U+DFFF), is above U+10FFFF, or is a truncated trailing code unit is replaced with U+FFFD instead of being passed through. Encoding likewise replaces a lone (unpaired) surrogate with U+FFFD. The opt-in `{ fatal: true }` decoding option makes ill-formed input throw instead. The codecs no longer use the Node `Buffer` internally, so they also work on the Web backend (browsers), like UTF-16. The internal `_utf32` codec name (a private, undocumented implementation detail of the old codec-options indirection) was removed.
+
 ### 🚀 Improvements
+
+- Speed up the UTF-32 codecs - by [@bjohansebas](https://github.com/bjohansebas) in [#407](https://github.com/pillarjs/iconv-lite/pull/407)
+
+    UTF-32 decoding and encoding are noticeably faster, and encoding no longer allocates a Node `Buffer`.
 
 - Recognize more WHATWG encoding labels - by [@bjohansebas](https://github.com/bjohansebas) in [#403](https://github.com/pillarjs/iconv-lite/pull/403)
 
